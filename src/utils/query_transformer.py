@@ -54,9 +54,9 @@ class HybridQueryTransformer:
         # Step 1: Rule-based synonym expansion
         synonym_expanded = self._expand_with_synonyms(original_query, intent_analysis)
         
-        # Step 2: LLM-powered query enhancement (if confidence is high enough)
+        # Step 2: LLM-powered query enhancement (lower threshold for more enhancement)
         llm_enhanced = None
-        if intent_analysis.get("confidence", 0) > 0.7 and intent_analysis.get("trigger_search", False):
+        if intent_analysis.get("confidence", 0) > 0.5 and intent_analysis.get("trigger_search", False):
             llm_enhanced = await self._llm_enhance_query(original_query, intent_analysis, context)
         
         # Step 3: Combine approaches intelligently
@@ -86,35 +86,92 @@ class HybridQueryTransformer:
         domain = self._detect_domain_context(query)
         synonyms = self.domain_synonyms.get(domain, {})
         
-        # Add general synonyms to domain-specific ones
-        general_synonyms = {
-            "increase": ["grow", "rise", "expand", "enhance", "boost"],
-            "decrease": ["reduce", "decline", "drop", "lower", "minimize"],
-            "compare": ["contrast", "evaluate", "analyze", "assess"],
-            "explain": ["describe", "clarify", "elaborate", "detail"],
-            "find": ["locate", "identify", "discover", "search", "retrieve"]
+        # Add MUCH more comprehensive synonyms
+        comprehensive_synonyms = {
+            # ML/AI terms
+            "machine learning": ["ML", "artificial intelligence", "AI", "deep learning"],
+            "learning": ["training", "modeling", "algorithms"],
+            "machine": ["computer", "artificial", "automated"],
+            
+            # News/information terms  
+            "news": ["updates", "developments", "advances", "progress", "breakthroughs"],
+            "recent": ["latest", "new", "current", "updated"],
+            "information": ["data", "details", "facts", "insights"],
+            
+            # Question terms
+            "what": ["which", "describe"],
+            "how": ["method", "process", "way"],
+            "benefits": ["advantages", "profits", "gains", "value"],
+            "issues": ["problems", "challenges", "difficulties"],
+            
+            # Business terms
+            "cost": ["price", "expense", "fee", "budget"],
+            "profit": ["revenue", "income", "earnings", "returns"],
+            "strategy": ["approach", "plan", "method", "framework"],
+            "market": ["industry", "sector", "domain"],
+            "customer": ["client", "user", "consumer"],
+            
+            # Technical terms
+            "system": ["platform", "framework", "infrastructure"],
+            "performance": ["efficiency", "speed", "optimization"],
+            "method": ["approach", "technique", "algorithm", "procedure"],
+            "solution": ["fix", "resolution", "answer", "remedy"],
+            
+            # General enhancement terms
+            "increase": ["grow", "rise", "expand", "boost"],
+            "decrease": ["reduce", "decline", "drop", "lower"],
+            "compare": ["contrast", "evaluate", "analyze"],
+            "explain": ["describe", "clarify", "detail"],
+            "find": ["locate", "identify", "discover", "search"]
         }
-        synonyms.update(general_synonyms)
+        
+        # Merge with domain-specific synonyms
+        synonyms.update(comprehensive_synonyms)
+        
+        # Process each word and add synonyms
+        added_synonyms = 0
+        max_synonyms = 6  # Limit to prevent over-expansion
         
         for word in words:
             clean_word = word.strip('.,!?()[]')
             expanded_terms.append(word)
             
-            # Add synonyms based on query type
-            if clean_word in synonyms:
+            # Check for exact matches
+            if clean_word in synonyms and added_synonyms < max_synonyms:
                 if query_type == "factual":
                     # For factual queries, add 1 precise synonym
                     expanded_terms.append(synonyms[clean_word][0])
-                elif query_type == "explanation":
-                    # For explanations, add 2 contextual synonyms
+                    added_synonyms += 1
+                elif query_type in ["explanation", "list"]:
+                    # For explanations and lists, add 2 contextual synonyms
                     expanded_terms.extend(synonyms[clean_word][:2])
-                elif query_type == "list":
-                    # For lists, add variation terms
-                    expanded_terms.extend(synonyms[clean_word][:1])
+                    added_synonyms += 2
+                else:
+                    # Default: add 1 synonym
+                    expanded_terms.append(synonyms[clean_word][0])
+                    added_synonyms += 1
+            
+            # Also check for multi-word phrases
+            if added_synonyms < max_synonyms:
+                for phrase, phrase_synonyms in synonyms.items():
+                    if ' ' in phrase and phrase in query.lower() and added_synonyms < max_synonyms:
+                        expanded_terms.extend(phrase_synonyms[:1])
+                        added_synonyms += 1
+                        break
         
-        # Limit expansion to avoid over-complication
-        max_length = len(words) + min(5, len(words))
-        return ' '.join(expanded_terms[:max_length])
+        expanded_query = ' '.join(expanded_terms)
+        
+        # If no synonyms were added, try alternative approach
+        if len(expanded_terms) <= len(words):
+            # Add domain-specific terms based on detected context
+            if domain == "technical":
+                expanded_query += " technology system implementation"
+            elif domain == "business":
+                expanded_query += " business strategy market"
+            elif "machine learning" in query.lower():
+                expanded_query += " AI algorithms data science"
+            
+        return expanded_query.strip()
     
     async def _llm_enhance_query(self, query: str, intent_analysis: Dict[str, Any], context: Dict[str, Any] = None) -> str:
         """Use LLM to enhance query with context and domain knowledge."""
@@ -172,7 +229,7 @@ Respond with ONLY the enhanced query, no explanations."""
         confidence = intent_analysis.get("confidence", 0.5)
         
         # Decision logic for combination
-        if llm_enhanced and confidence > 0.8:
+        if llm_enhanced and confidence > 0.6:  # Lowered threshold
             # High confidence: prefer LLM enhancement
             if query_type in ["explanation", "comparison"]:
                 # For complex queries, blend LLM with key synonyms
@@ -195,34 +252,64 @@ Respond with ONLY the enhanced query, no explanations."""
         
         variations = [query]  # Always include the main query
         query_type = intent_analysis.get("query_type", "explanation")
+        query_lower = query.lower()
         
+        # Generate more comprehensive variations
         if query_type == "factual":
-            # For factual queries, create direct variations
             variations.extend([
-                query.replace("what is", "definition of"),
-                query.replace("?", ""),
-                f"explain {query.replace('what is ', '').replace('?', '')}"
+                query.replace("what is", "definition of").replace("what are", "examples of"),
+                query.replace("?", "").strip(),
+                f"explain {query.replace('what is ', '').replace('what are ', '').replace('?', '')}"
             ])
             
         elif query_type == "list":
-            # For list queries, add enumeration terms
+            base_query = query.replace("list", "").replace("what are some", "").strip()
             variations.extend([
-                f"list of {query.replace('list', '').strip()}",
-                f"examples of {query.replace('list', '').strip()}",
-                query.replace("list", "enumerate")
+                f"list of {base_query}",
+                f"examples of {base_query}",
+                f"types of {base_query}",
+                query.replace("list", "enumerate").replace("what are some", "show me")
             ])
             
         elif query_type == "comparison":
-            # For comparison queries, add analysis terms
             variations.extend([
                 query.replace("compare", "difference between"),
                 query.replace("compare", "similarities and differences"),
                 f"analysis of {query.replace('compare ', '').replace('comparison of ', '')}"
             ])
         
-        # Remove duplicates and empty strings
-        variations = list(dict.fromkeys([v.strip() for v in variations if v.strip()]))
-        return variations[:4]  # Limit to 4 variations
+        # Add domain-specific variations
+        if "machine learning" in query_lower or "ml" in query_lower:
+            variations.extend([
+                query.replace("machine learning", "ML").replace("artificial intelligence", "AI"),
+                query.replace("ML", "artificial intelligence"),
+                query.replace("news", "updates").replace("developments", "advances")
+            ])
+        
+        # Add question format variations
+        if not query.endswith("?"):
+            variations.append(f"{query}?")
+        
+        if "what are" in query_lower:
+            variations.append(query.replace("what are", "show me").replace("What are", "Show me"))
+        
+        if "news" in query_lower:
+            variations.extend([
+                query.replace("news", "latest developments"),
+                query.replace("news", "recent updates"),
+                query.replace("news", "current trends")
+            ])
+        
+        # Remove duplicates and empty strings, preserve order
+        seen = set()
+        unique_variations = []
+        for v in variations:
+            clean_v = v.strip()
+            if clean_v and clean_v not in seen and len(clean_v) > 3:
+                seen.add(clean_v)
+                unique_variations.append(clean_v)
+        
+        return unique_variations[:6]  # Limit to 6 variations for efficiency
     
     def _detect_domain_context(self, query: str) -> str:
         """Detect the domain context of the query."""
@@ -230,17 +317,17 @@ Respond with ONLY the enhanced query, no explanations."""
         query_lower = query.lower()
         
         business_terms = ["cost", "profit", "revenue", "market", "strategy", "business", "company", "customer"]
-        technical_terms = ["system", "method", "algorithm", "performance", "implementation", "code", "software"]
+        technical_terms = ["system", "method", "algorithm", "performance", "implementation", "code", "software", "machine learning", "AI"]
         academic_terms = ["research", "study", "analysis", "theory", "hypothesis", "paper", "journal"]
         
         business_count = sum(1 for term in business_terms if term in query_lower)
         technical_count = sum(1 for term in technical_terms if term in query_lower)
         academic_count = sum(1 for term in academic_terms if term in query_lower)
         
-        if business_count >= technical_count and business_count >= academic_count:
-            return "business"
-        elif technical_count >= academic_count:
+        if technical_count >= business_count and technical_count >= academic_count:
             return "technical"
+        elif business_count >= academic_count:
+            return "business"
         elif academic_count > 0:
             return "academic"
         else:
@@ -265,7 +352,7 @@ Respond with ONLY the enhanced query, no explanations."""
             "approach": "hybrid",
             "methods_used": ["synonym_expansion", "llm_enhancement", "variation_generation"],
             "query_type_optimization": intent_analysis.get("query_type"),
-            "confidence_threshold": 0.7,
+            "confidence_threshold": 0.5,  # Lowered threshold
             "domain_aware": True
         }
     
@@ -284,4 +371,4 @@ Respond with ONLY the enhanced query, no explanations."""
         keywords = [word for word in words if word not in stopwords and len(word) > 2]
         
         # Return unique keywords, preserving order
-        return list(dict.fromkeys(keywords))# Copy the HybridQueryTransformer content here
+        return list(dict.fromkeys(keywords))

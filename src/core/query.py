@@ -4,26 +4,35 @@ Query processing and transformation for the RAG system.
 from typing import Dict, Any
 from src.utils.helpers import clean_query, setup_logger
 from src.utils.llm_client import MistralClient
+from src.utils.query_transformer import HybridQueryTransformer
 
 logger = setup_logger(__name__)
 
 
 class QueryProcessor:
-    """Handles query intent detection and transformation using LLM."""
+    """Handles query intent detection and advanced transformation using hybrid approach."""
     
     def __init__(self):
         self.llm_client = MistralClient()
+        self.query_transformer = HybridQueryTransformer(self.llm_client)
     
-    async def process_query(self, query: str) -> Dict[str, Any]:
-        """Process user query using advanced LLM-based intent detection."""
+    async def process_query(self, query: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Process user query using advanced LLM-based intent detection and hybrid transformation."""
         # Clean the query
         cleaned_query = clean_query(query)
         
         # Use LLM for sophisticated intent detection
         intent_analysis = await self.llm_client.detect_intent(cleaned_query)
         
-        # Transform the query for better retrieval
-        transformed_query = await self._transform_query(cleaned_query, intent_analysis)
+        # Advanced hybrid query transformation using the transformer
+        transformation_results = await self.query_transformer.transform_query(
+            cleaned_query, 
+            intent_analysis, 
+            context
+        )
+        
+        # Determine advanced search strategy based on transformation results
+        search_strategy = self._determine_advanced_search_strategy(intent_analysis, transformation_results)
         
         processed = {
             "original_query": query,
@@ -33,153 +42,133 @@ class QueryProcessor:
             "query_type": intent_analysis.get("query_type", "explanation"),
             "confidence": intent_analysis.get("confidence", 0.5),
             "reasoning": intent_analysis.get("reasoning", ""),
-            "detection_method": intent_analysis.get("method", "llm"),
-            "transformed_query": transformed_query,
-            "search_strategy": self._determine_search_strategy(intent_analysis)
+            "detection_method": intent_analysis.get("method", "rule-based"),
+            
+            # Enhanced transformation results from HybridQueryTransformer
+            "transformed_query": transformation_results["final_query"],
+            "synonym_expanded": transformation_results["synonym_expanded"],
+            "llm_enhanced": transformation_results["llm_enhanced"],
+            "search_variations": transformation_results["search_variations"],
+            "query_keywords": transformation_results["query_keywords"],
+            "transformation_strategy": transformation_results["transformation_strategy"],
+            
+            # Advanced search strategy
+            "search_strategy": search_strategy
         }
         
-        logger.info(f"Query processed - Intent: {processed['intent']}, Type: {processed['query_type']}, Search: {processed['trigger_search']}")
+        logger.info(f"Query processed - Intent: {processed['intent']}, Type: {processed['query_type']}, "
+                   f"Enhanced: {bool(transformation_results['llm_enhanced'])}, "
+                   f"Variations: {len(transformation_results['search_variations'])}")
         return processed
     
-    async def _transform_query(self, query: str, intent_analysis: Dict[str, Any]) -> str:
-        """Transform query to improve retrieval based on intent analysis."""
-        
-        # If high confidence from LLM, apply specific transformations
-        if intent_analysis.get("confidence", 0) > 0.8 and intent_analysis.get("method") != "rule-based":
-            
-            # If it's a greeting, don't transform
-            if intent_analysis.get("intent") == "greeting":
-                return query
-            
-            # For questions, we can expand with context
-            if intent_analysis.get("intent") == "question":
-                query_type = intent_analysis.get("query_type", "explanation")
-                
-                if query_type == "list":
-                    # Add context for list queries
-                    if "list" not in query.lower():
-                        return f"list of {query.replace('?', '').strip()}"
-                
-                elif query_type == "comparison":
-                    # Add comparison context
-                    if "compare" not in query.lower() and "difference" not in query.lower():
-                        return f"comparison of {query.replace('?', '').strip()}"
-        
-        # Basic query cleaning and expansion
-        expanded_query = self._expand_query_with_synonyms(query)
-        return expanded_query
-    
-    def _expand_query_with_synonyms(self, query: str) -> str:
-        """Basic query expansion with common synonyms."""
-        
-        # Simple synonym mapping
-        synonym_map = {
-            "cost": ["price", "expense", "fee"],
-            "benefit": ["advantage", "profit", "gain"],
-            "issue": ["problem", "challenge", "difficulty"],
-            "method": ["approach", "technique", "way"],
-            "result": ["outcome", "effect", "consequence"],
-            "important": ["significant", "crucial", "key"],
-            "different": ["various", "distinct", "separate"],
-            "increase": ["grow", "rise", "expand"],
-            "decrease": ["reduce", "decline", "drop"]
-        }
-        
-        words = query.lower().split()
-        expanded_terms = []
-        
-        for word in words:
-            # Remove punctuation for matching
-            clean_word = word.strip('.,!?')
-            if clean_word in synonym_map:
-                # Add original word plus first synonym
-                expanded_terms.append(word)
-                expanded_terms.append(synonym_map[clean_word][0])
-            else:
-                expanded_terms.append(word)
-        
-        # If expansion happened, create expanded query
-        if len(expanded_terms) > len(words):
-            return ' '.join(expanded_terms[:len(words) + 2])  # Limit expansion
-        
-        return query
-    
-    def _determine_search_strategy(self, intent_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Determine the search strategy based on intent analysis."""
+    def _determine_advanced_search_strategy(self, intent_analysis: Dict[str, Any], transformation_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Determine advanced search strategy based on intent and transformation results."""
         
         query_type = intent_analysis.get("query_type", "explanation")
         intent = intent_analysis.get("intent", "informational")
+        has_llm_enhancement = transformation_results.get("llm_enhanced") is not None
         
         strategy = {
             "semantic_weight": 0.7,  # Default semantic vs keyword balance
             "keyword_weight": 0.3,
             "rerank_method": "mmr",  # maximal marginal relevance
             "diversity_threshold": 0.3,
-            "min_similarity": 0.5
+            "min_similarity": 0.5,
+            "use_query_variations": len(transformation_results.get("search_variations", [])) > 1,
+            "multi_pass_search": False,
+            "boost_exact_matches": True
         }
         
-        # Adjust strategy based on query type
+        # Adjust strategy based on query type and enhancement quality
         if query_type == "factual":
-            # For factual queries, prefer precision
-            strategy["semantic_weight"] = 0.8
-            strategy["min_similarity"] = 0.6
+            # For factual queries, prefer precision and exact matches
+            strategy.update({
+                "semantic_weight": 0.8,
+                "min_similarity": 0.6,
+                "boost_exact_matches": True,
+                "diversity_threshold": 0.2
+            })
             
         elif query_type == "list":
-            # For list queries, prefer diversity
-            strategy["diversity_threshold"] = 0.5
-            strategy["rerank_method"] = "diversity_mmr"
+            # For list queries, prefer diversity and comprehensive results
+            strategy.update({
+                "diversity_threshold": 0.5,
+                "rerank_method": "diversity_mmr",
+                "multi_pass_search": True,
+                "semantic_weight": 0.6,
+                "keyword_weight": 0.4
+            })
             
         elif query_type == "summary":
-            # For summaries, get diverse content
-            strategy["semantic_weight"] = 0.6
-            strategy["keyword_weight"] = 0.4
-            strategy["diversity_threshold"] = 0.4
+            # For summaries, get diverse content with good coverage
+            strategy.update({
+                "semantic_weight": 0.6,
+                "keyword_weight": 0.4,
+                "diversity_threshold": 0.4,
+                "multi_pass_search": True
+            })
             
         elif query_type == "comparison":
-            # For comparisons, need diverse perspectives
-            strategy["diversity_threshold"] = 0.6
-            strategy["rerank_method"] = "comparison_mmr"
+            # For comparisons, need diverse perspectives and comprehensive coverage
+            strategy.update({
+                "diversity_threshold": 0.6,
+                "rerank_method": "comparison_mmr",
+                "multi_pass_search": True,
+                "semantic_weight": 0.65,
+                "keyword_weight": 0.35
+            })
+        
+        # Adjust based on LLM enhancement quality
+        if has_llm_enhancement:
+            # If we have good LLM enhancement, rely more on semantic search
+            strategy["semantic_weight"] = min(0.9, strategy["semantic_weight"] + 0.1)
+            strategy["keyword_weight"] = 1.0 - strategy["semantic_weight"]
         
         # Adjust based on intent
         if intent == "command":
             # Commands often want specific, direct results
-            strategy["min_similarity"] = 0.7
-            strategy["semantic_weight"] = 0.9
+            strategy.update({
+                "min_similarity": 0.7,
+                "semantic_weight": 0.85,
+                "boost_exact_matches": True
+            })
         
         return strategy
     
     def should_refuse_query(self, query: str, intent_analysis: Dict[str, Any]) -> tuple[bool, str]:
-        """Determine if query should be refused based on content policies."""
+        """Determine if query should be refused based on enhanced content policies."""
         
         query_lower = query.lower()
         
-        # PII detection patterns
+        # Enhanced PII detection patterns
+        import re
         pii_patterns = [
             r'\b\d{3}-\d{2}-\d{4}\b',  # SSN
             r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b',  # Credit card
             r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',  # Email
-            r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'  # Phone
+            r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',  # Phone
+            r'\b\d{9}\b'  # Potential SSN without dashes
         ]
         
-        import re
         for pattern in pii_patterns:
             if re.search(pattern, query):
                 return True, "Query contains potential personally identifiable information (PII). Please rephrase without sensitive data."
         
-        # Medical/legal disclaimer triggers
+        # Enhanced medical/legal disclaimer triggers
         medical_legal_terms = [
             'medical advice', 'legal advice', 'diagnosis', 'prescribe', 'treatment',
-            'lawsuit', 'attorney', 'lawyer', 'sue', 'court case'
+            'lawsuit', 'attorney', 'lawyer', 'sue', 'court case', 'medication',
+            'dosage', 'symptoms', 'disease', 'illness', 'legal counsel'
         ]
         
         if any(term in query_lower for term in medical_legal_terms):
             disclaimer = "I cannot provide medical or legal advice. Please consult with qualified professionals for such matters."
             return True, disclaimer
         
-        # Harmful content detection
+        # Enhanced harmful content detection
         harmful_terms = [
             'hack', 'exploit', 'illegal', 'fraud', 'steal', 'pirate',
-            'violence', 'harm', 'weapon', 'drug dealing'
+            'violence', 'harm', 'weapon', 'drug dealing', 'money laundering'
         ]
         
         if any(term in query_lower for term in harmful_terms):
