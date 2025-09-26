@@ -32,8 +32,8 @@ async def ingest_documents(files: List[UploadFile] = File(...)):
                     detail=f"File {file.filename} is not a PDF"
                 )
         
-        # TODO: Process documents
-        total_chunks = len(files) * 10  # Mock value
+        # TODO: Process documents 
+        total_chunks = len(files) * 10  # Mock value 
         
         processing_time = time.time() - start_time
         
@@ -61,7 +61,7 @@ async def query_documents(request: QueryRequest):
         
         return QueryResponse(
             query=request.query,
-            answer="This is a placeholder response. Full implementation coming",
+            answer="This is a placeholder response. Full implementation coming in next steps!",
             citations=[],
             metadata={"status": "placeholder"},
             processing_time=processing_time,
