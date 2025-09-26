@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     max_query_length: int = 500
     
     # Generation Settings
-    max_tokens: int = 1000
+    max_tokens: int = 1500
     temperature: float = 0.1
     
     # Storage

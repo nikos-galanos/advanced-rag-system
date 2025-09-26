@@ -53,9 +53,21 @@ class MistralClient:
             return None
     
     async def detect_intent(self, query: str) -> Dict[str, Any]:
-        """Detect query intent using LLM."""
+        """Detect query intent using LLM with rule-based fallback."""
         
-        # Intent detection prompt
+        # First try LLM-based detection
+        llm_result = await self._llm_intent_detection(query)
+        
+        if llm_result:
+            logger.info(f"LLM intent detection successful: {llm_result.get('intent')}")
+            return llm_result
+        else:
+            logger.info("LLM intent detection failed, using rule-based fallback")
+            return self._fallback_intent_detection(query)
+    
+    async def _llm_intent_detection(self, query: str) -> Optional[Dict[str, Any]]:
+        """Use LLM for sophisticated intent detection."""
+        
         messages = [
             {
                 "role": "system",
@@ -67,13 +79,14 @@ Analyze the user query and determine:
 3. Query type for response formatting (list, table, comparison, explanation, factual)
 4. Confidence level (0.0-1.0)
 
-Respond ONLY with a valid JSON object in this format:
+Respond ONLY with a valid JSON object in this exact format:
 {
     "intent": "question",
     "trigger_search": true,
     "query_type": "explanation",
     "confidence": 0.9,
-    "reasoning": "User is asking for information that requires document search"
+    "reasoning": "User is asking for information that requires document search",
+    "method": "llm"
 }
 
 Intent categories:
@@ -88,7 +101,12 @@ Query types:
 - "table": Requests for comparisons or structured data
 - "explanation": Requests for detailed explanations
 - "factual": Simple fact-based questions
-- "summary": Requests for summaries or overviews"""
+- "summary": Requests for summaries or overviews
+- "comparison": Compare X vs Y type queries
+
+Trigger search rules:
+- DON'T trigger for: greetings, thanks, yes/no, conversational responses
+- DO trigger for: questions about topics, requests for information, commands to find data"""
             },
             {
                 "role": "user",
@@ -97,32 +115,47 @@ Query types:
         ]
         
         try:
-            response = await self.chat_completion(messages, temperature=0.0, max_tokens=150)
+            response = await self.chat_completion(
+                messages=messages, 
+                temperature=0.1,  # Low temperature for consistent classification
+                max_tokens=200
+            )
             
             if response:
+                # Clean response - remove markdown code blocks if present
+                cleaned_response = response.strip()
+                if cleaned_response.startswith('```json'):
+                    cleaned_response = cleaned_response[7:]  # Remove ```json
+                if cleaned_response.endswith('```'):
+                    cleaned_response = cleaned_response[:-3]  # Remove ```
+                cleaned_response = cleaned_response.strip()
+                
                 # Parse JSON response
                 try:
-                    result = json.loads(response)
+                    result = json.loads(cleaned_response)
                     
                     # Validate required fields
                     required_fields = ["intent", "trigger_search", "query_type", "confidence"]
                     if all(field in result for field in required_fields):
-                        logger.info(f"LLM intent detection: {result['intent']} (confidence: {result['confidence']})")
+                        # Ensure confidence is reasonable
+                        result["confidence"] = max(0.1, min(1.0, result.get("confidence", 0.5)))
+                        result["method"] = "llm"
+                        
+                        logger.info(f"✅ LLM intent detection successful: {result['intent']} (confidence: {result['confidence']})")
                         return result
                     else:
-                        logger.warning(f"Invalid LLM response format: {response}")
-                        return self._fallback_intent_detection(query)
+                        logger.warning(f"LLM response missing required fields: {cleaned_response}")
+                        return None
                         
-                except json.JSONDecodeError:
-                    logger.warning(f"Could not parse LLM response as JSON: {response}")
-                    return self._fallback_intent_detection(query)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Could not parse LLM response as JSON: {cleaned_response}, Error: {str(e)}")
+                    return None
             
-            # Fallback if API call failed
-            return self._fallback_intent_detection(query)
+            return None
             
         except Exception as e:
             logger.error(f"Error in LLM intent detection: {str(e)}")
-            return self._fallback_intent_detection(query)
+            return None
     
     def _fallback_intent_detection(self, query: str) -> Dict[str, Any]:
         """Fallback rule-based intent detection."""
