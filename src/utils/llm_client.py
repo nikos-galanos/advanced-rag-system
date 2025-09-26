@@ -141,7 +141,7 @@ Trigger search rules:
                         result["confidence"] = max(0.1, min(1.0, result.get("confidence", 0.5)))
                         result["method"] = "llm"
                         
-                        logger.info(f"✅ LLM intent detection successful: {result['intent']} (confidence: {result['confidence']})")
+                        logger.info(f" LLM intent detection successful: {result['intent']} (confidence: {result['confidence']})")
                         return result
                     else:
                         logger.warning(f"LLM response missing required fields: {cleaned_response}")
