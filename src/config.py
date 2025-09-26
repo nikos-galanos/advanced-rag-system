@@ -2,8 +2,12 @@
 Configuration settings for the RAG system.
 """
 import os
-from typing import List
-from pydantic import BaseSettings
+from typing import List, Optional
+from pydantic_settings import BaseSettings
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -15,7 +19,7 @@ class Settings(BaseSettings):
     debug: bool = False
     
     # Mistral AI API
-    mistral_api_key: str = os.getenv("MISTRAL_API_KEY", "your-mistral-api-key")
+    mistral_api_key: str = os.getenv("MISTRAL_API_KEY")
     mistral_base_url: str = "https://api.mistral.ai/v1"
     mistral_model: str = "mistral-large-latest"
     mistral_embed_model: str = "mistral-embed"
