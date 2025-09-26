@@ -150,8 +150,7 @@ class GenerationEngine:
         
         context = "\n---\n".join(context_parts)
         
-        # Truncate if too long (respect token limits)
-        max_context_chars = 6000  # Conservative limit for context
+        max_context_chars = 6000  # limit for context
         if len(context) > max_context_chars:
             context = context[:max_context_chars] + "\n...[Content truncated for length]"
         
@@ -192,7 +191,7 @@ class GenerationEngine:
             return None
     
     def _apply_hallucination_filter(self, answer: str, search_results: List[Any]) -> tuple[str, Dict[str, Any]]:
-        """Apply post-hoc hallucination detection filter."""
+        """Apply post-hoc hallucination detection filter with improved support for structured data."""
         
         # Extract key facts from the answer
         answer_sentences = [s.strip() for s in re.split(r'[.!?]+', answer) if s.strip()]
@@ -210,19 +209,24 @@ class GenerationEngine:
                 supported_sentences.append(sentence)
                 continue
                 
-            # Simple verification - check if key concepts appear in sources
+            # Enhanced verification for structured data
             sentence_lower = sentence.lower()
-            key_words = [word for word in sentence_lower.split() if len(word) > 3]
             
-            if key_words:
-                support_ratio = sum(1 for word in key_words if word in combined_sources) / len(key_words)
-                
-                if support_ratio >= 0.5:  # At least 50% of key words found in sources
+            # Extract key entities from sentence
+            key_entities = self._extract_key_entities(sentence_lower)
+            
+            # Check if sentence is supported by sources
+            is_supported = self._check_sentence_support(sentence_lower, combined_sources, key_entities)
+            
+            if is_supported:
+                supported_sentences.append(sentence)
+            else:
+                # Additional check for tabular/structured data
+                if self._is_structured_data_sentence(sentence_lower, search_results):
+                    logger.info(f"Allowing structured data sentence: {sentence[:50]}...")
                     supported_sentences.append(sentence)
                 else:
                     unsupported_sentences.append(sentence)
-            else:
-                supported_sentences.append(sentence)
         
         # Reconstruct answer with only supported sentences
         filtered_answer = ". ".join(supported_sentences)
@@ -233,13 +237,160 @@ class GenerationEngine:
             "total_sentences": len(answer_sentences),
             "supported_sentences": len(supported_sentences),
             "unsupported_sentences": len(unsupported_sentences),
-            "filter_applied": len(unsupported_sentences) > 0
+            "filter_applied": len(unsupported_sentences) > 0,
+            "structured_data_detected": any(r.chunk.metadata.get("contains_structured_data", False) for r in search_results)
         }
         
         if len(unsupported_sentences) > 0:
             logger.info(f"Hallucination filter removed {len(unsupported_sentences)} potentially unsupported sentences")
         
         return filtered_answer, hallucination_info
+    
+    def _extract_key_entities(self, sentence: str) -> List[str]:
+        """Extract key entities like codes, dates, names, numbers from sentence."""
+        import re
+        
+        entities = []
+        
+        # Alphanumeric codes
+        code_pattern = r'\b[A-Z]{2,4}\d{1,4}\b'
+        entities.extend(re.findall(code_pattern, sentence.upper()))
+        
+        # Three-letter codes
+        three_letter_pattern = r'\b[A-Z]{3}\b'
+        entities.extend(re.findall(three_letter_pattern, sentence.upper()))
+        
+        # Dates (various formats)
+        date_patterns = [
+            r'\b\d{4}-\d{2}-\d{2}\b',  # 2025-09-23
+            r'\b\d{1,2}/\d{1,2}/\d{4}\b',  # 9/23/2025
+            r'\b\d{1,2}-\d{1,2}-\d{4}\b',   # 9-23-2025
+            r'\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{4}\b'  # 23 Sep 2025
+        ]
+        for pattern in date_patterns:
+            entities.extend(re.findall(pattern, sentence, re.IGNORECASE))
+        
+        # Numbers
+        number_patterns = [
+            r'\$\d{1,3}(?:,\d{3})*(?:\.\d{2})?',  # Money: $1,234.56
+            r'\d+%',  # Percentages: 25%
+            r'\b\d{1,3}(?:,\d{3})*\b'  # Large numbers: 1,234
+        ]
+        for pattern in number_patterns:
+            entities.extend(re.findall(pattern, sentence))
+        
+        # Names (capitalized words - common proper nouns)
+        name_pattern = r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b'
+        potential_names = re.findall(name_pattern, sentence)
+        # Filter out common words that might be capitalized
+        common_words = {'The', 'This', 'That', 'These', 'Those', 'A', 'An', 'And', 'Or', 'But'}
+        entities.extend([name for name in potential_names if name not in common_words])
+        
+        return entities
+    
+    def _check_sentence_support(self, sentence: str, combined_sources: str, key_entities: List[str]) -> bool:
+        """Enhanced support checking with entity matching for any type of content."""
+        
+        # Method 1: Original word-based approach (relaxed threshold)
+        key_words = [word for word in sentence.split() if len(word) > 3 and word.isalpha()]
+        if key_words:
+            word_support_ratio = sum(1 for word in key_words if word in combined_sources) / len(key_words)
+            if word_support_ratio >= 0.25:  # Lowered threshold for better recall
+                return True
+        
+        # Method 2: Entity-based verification for structured data
+        if key_entities:
+            entity_support_count = 0
+            for entity in key_entities:
+                # Check for exact matches (case-insensitive)
+                if entity.lower() in combined_sources or entity.upper() in combined_sources.upper():
+                    entity_support_count += 1
+                # Check for partial matches for complex entities
+                elif any(part.lower() in combined_sources for part in entity.split() if len(part) > 2):
+                    entity_support_count += 0.5
+            
+            if len(key_entities) > 0:
+                entity_support_ratio = entity_support_count / len(key_entities)
+                if entity_support_ratio >= 0.4:  # At least 40% of entities supported
+                    return True
+        
+        # Method 3: Content-aware fuzzy matching
+        sentence_words = sentence.lower().split()
+        
+        # Look for meaningful content overlaps
+        content_words = [w for w in sentence_words if len(w) >= 4 and w.isalpha()]
+        if content_words:
+            content_matches = sum(1 for word in content_words if word in combined_sources.lower())
+            content_ratio = content_matches / len(content_words)
+            if content_ratio >= 0.3:  # At least 30% of content words match
+                return True
+        
+        # Method 4: Exact phrase matching for high confidence
+        # Split sentence into meaningful phrases (3+ words)
+        words = sentence.split()
+        for i in range(len(words) - 2):
+            phrase = " ".join(words[i:i+3]).lower()
+            if phrase in combined_sources.lower():
+                return True
+        
+        # Method 5: Number and date matching for structured data
+        numbers_in_sentence = re.findall(r'\b\d+\b', sentence)
+        if numbers_in_sentence:
+            number_matches = sum(1 for num in numbers_in_sentence if num in combined_sources)
+            if len(numbers_in_sentence) > 0 and number_matches / len(numbers_in_sentence) >= 0.5:
+                return True
+        
+        return False
+    
+    def _is_structured_data_sentence(self, sentence: str, search_results: List[Any]) -> bool:
+        """Check if sentence appears to be about structured/tabular data."""
+        
+        
+        # Common structured data indicators
+        structured_indicators = [
+            # Business/Finance
+            'cost', 'price', 'revenue', 'profit', 'budget', 'expense', 'fee',
+            'total', 'amount', 'value', 'balance', 'payment', 'invoice',
+            
+            # Data/Analytics
+            'data', 'report', 'analysis', 'metric', 'statistic', 'count',
+            'percentage', 'ratio', 'rate', 'average', 'maximum', 'minimum',
+            
+            # Scheduling/Planning
+            'date', 'time', 'schedule', 'appointment', 'meeting', 'deadline',
+            'calendar', 'event', 'period', 'duration', 'frequency',
+            
+            # IDs and References
+            'id', 'code', 'number', 'reference', 'index', 'identifier',
+            'serial', 'version', 'model', 'type', 'category', 'class',
+            
+            # Status and Classification
+            'status', 'state', 'condition', 'level', 'grade', 'rank',
+            'tier', 'priority', 'category', 'group', 'department'
+        ]
+        
+        # Look for numeric patterns
+        has_numbers = bool(re.search(r'\b\d+\b', sentence))
+        has_dates = bool(re.search(r'\b\d{4}\b|\b\d{1,2}[/-]\d{1,2}\b', sentence))
+        has_codes = bool(re.search(r'\b[A-Z]{2,4}\d+\b', sentence.upper()))
+        has_percentages = bool(re.search(r'\d+%', sentence))
+        has_currency = bool(re.search(r'\$\d+', sentence))
+        
+        # Count structured indicators
+        indicator_count = sum(1 for indicator in structured_indicators if indicator in sentence.lower())
+        
+        # Score the sentence
+        structure_score = (
+            indicator_count +
+            (2 if has_numbers else 0) +
+            (2 if has_dates else 0) +
+            (3 if has_codes else 0) +
+            (2 if has_percentages else 0) +
+            (2 if has_currency else 0)
+        )
+        
+        # More lenient threshold for structured data detection
+        return structure_score >= 2
     
     def _generate_citations(self, search_results: List[Any]) -> List[Dict[str, Any]]:
         """Generate proper citations from search results."""
