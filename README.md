@@ -1,6 +1,6 @@
 # Advanced RAG System
 
-A production-grade Retrieval-Augmented Generation system built from scratch with hybrid semantic and keyword search capabilities, designed for enterprise document analysis and query processing.
+An advanced Retrieval-Augmented Generation system built from scratch with hybrid semantic and keyword search capabilities, designed for enterprise document analysis and query processing.
 
 ## Table of Contents
 
